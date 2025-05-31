@@ -148,19 +148,18 @@ def quiz_page():
                 st.session_state.pop(f"quiz_choice_{st.session_state.current_q-1}", None)
                 st.session_state.pop(answered_key, None)
     else:
-        st.balloons()
-        st.markdown(f"### 🎉 測驗結束！總分：{st.session_state.score}/{len(questions)}")
-        st.write("### 📊 學習紀錄")
-        st.json(st.session_state.log)
-
-        # 測驗結束，計算本次分析
+        # 測驗結束只顯示本次測驗結果
         quiz_time = dt.now().strftime("%Y-%m-%d %H:%M:%S")
         total = len(questions)
         correct = st.session_state.score
         accuracy = round((correct / total) * 100, 2) if total > 0 else 0
         wrong_words = [item["word"] for item in st.session_state.log if not item["is_correct"]]
         wrong_words_str = ", ".join(wrong_words) if wrong_words else "無"
-
+        st.balloons()
+        st.markdown(f"### 🎉 測驗結束！")
+        st.markdown(f"#### 測驗完成時間：{quiz_time}")
+        st.markdown(f"#### 正確率：{accuracy}%")
+        st.markdown(f"#### 錯誤單字：{wrong_words_str}")
         # 儲存到 quiz_result.json（避免重複，依 題數+正確率+錯誤單字 判斷）
         result_row = {
             "測驗時間": quiz_time,
@@ -173,25 +172,33 @@ def quiz_page():
                 quiz_results = json.load(f)
         else:
             quiz_results = []
-        # 檢查是否已經有相同「題數、正確率、錯誤單字」的紀錄
-        is_duplicate = any(
-            (r.get("題數") == total and
-             r.get("正確率") == f"{accuracy}%" and
-             r.get("錯誤單字") == wrong_words_str)
-            for r in quiz_results
-        )
+        is_duplicate = False
+        for r in quiz_results:
+            if (
+                r.get("題數") == total and
+                r.get("正確率") == f"{accuracy}%" and
+                r.get("錯誤單字") == wrong_words_str
+            ):
+                # 新增：比對單字內容
+                # 取出本次測驗的所有單字
+                current_words = set([q["word"] for q in questions])
+                # 取出歷史紀錄的所有單字（需額外存一個欄位）
+                record_words = set(r.get("單字列表", []))
+                if current_words == record_words:
+                    is_duplicate = True
+                    break
+        # 新增：將本次單字列表存入紀錄
+        result_row["單字列表"] = [q["word"] for q in questions]
         if not is_duplicate:
             quiz_results.append(result_row)
             with open("quiz_result.json", "w", encoding="utf-8") as f:
                 json.dump(quiz_results, f, ensure_ascii=False, indent=2)
-
         if st.button("重新開始"):
-            # 重新選題數
             st.session_state.quiz_questions = []
             st.session_state.current_q = 0
             st.session_state.score = 0
             st.session_state.log = []
-            st.session_state.quiz_started = False  # 關鍵：讓選題數畫面回來
+            st.session_state.quiz_started = False
             st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
 
 # --------------------
@@ -234,7 +241,6 @@ def login_page():
 def study_page():
     st.title("學習頁")
     st.write(f"今天是：{datetime.date.today().isoformat()}")
-
     col1, col2 = st.columns(2)
     with col1:
         new_word = st.text_input("輸入英文單字").strip().lower()
@@ -265,29 +271,31 @@ def study_page():
 
     if st.button("完成今日學習"):
         user = st.session_state.get("current_user", "")
-        response = {
-            "user": user,
-            "date": datetime.date.today().isoformat(),
-            "words_learned": st.session_state.get("words", [])
-        }
-        st.success("今日學習已完成！")
-        st.json(response)
-
-        # 新增：寫入一筆學習打卡到 checkin.json
-        checkin_record = {
-            "user": user,
-            "datetime": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "type": "study",  # 標記這是學習打卡
-            "words_learned": st.session_state.get("words", [])
-        }
-        if os.path.exists("checkin.json"):
-            with open("checkin.json", "r", encoding="utf-8") as f:
-                checkins = json.load(f)
+        today_words = st.session_state.get("words", [])
+        if today_words:  # 有新增單字才可打卡
+            response = {
+                "user": user,
+                "date": datetime.date.today().isoformat(),
+                "words_learned": today_words
+            }
+            st.success("今日學習已完成！明天繼續努力！")
+            # 新增：寫入一筆學習打卡到 checkin.json
+            checkin_record = {
+                "user": user,
+                "datetime": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "type": "study",  # 標記這是學習打卡
+                "words_learned": today_words
+            }
+            if os.path.exists("checkin.json"):
+                with open("checkin.json", "r", encoding="utf-8") as f:
+                    checkins = json.load(f)
+            else:
+                checkins = []
+            checkins.append(checkin_record)
+            with open("checkin.json", "w", encoding="utf-8") as f:
+                json.dump(checkins, f, ensure_ascii=False, indent=2)
         else:
-            checkins = []
-        checkins.append(checkin_record)
-        with open("checkin.json", "w", encoding="utf-8") as f:
-            json.dump(checkins, f, ensure_ascii=False, indent=2)
+            st.warning("今日還未新增單字，請勿偷懶！")
 
     st.subheader("已學單字")
     if "words" in st.session_state and st.session_state["words"]:
@@ -343,8 +351,10 @@ def stats_page():
     if wrong_counts:
         st.subheader("遺忘單字提示")
         st.info("以下單字曾經答錯多次，建議重複複習：")
-        for word, count in wrong_counts:
-            st.write(f"- **{word}**：錯誤次數 {count} 次")
+        # 以表格方式呈現
+        import pandas as pd
+        df_wrong = pd.DataFrame(wrong_counts, columns=["單字", "錯誤次數"])
+        st.table(df_wrong)
 
     # 歷史測驗分析紀錄表格
     if os.path.exists("quiz_result.json"):
@@ -428,6 +438,72 @@ def stats_page():
             if st.button("否", key="cancel_clear_checkin"):
                 st.session_state.show_clear_checkin_confirm = False
 
+def word_overview_page():
+    st.title("單字總覽")
+    words = st.session_state.get("words_data", [])
+    if not words:
+        st.info("目前沒有單字紀錄。")
+        return
+    # 依英文單字排序
+    sorted_words = sorted(words, key=lambda x: x["word"].lower())
+    for idx, w in enumerate(sorted_words):
+        row_key = f"word_{idx}_{w['word']}"
+        edit_key = f"edit_{row_key}"
+        del_key = f"del_{row_key}"
+        confirm_del_key = f"confirm_del_{row_key}"
+        editing = st.session_state.get(edit_key, False)
+        confirming_del = st.session_state.get(confirm_del_key, False)
+        col1, col2, col3 = st.columns([4, 4, 2])
+        with col1:
+            if not editing:
+                if st.button(w["word"], key=f"btn_word_{row_key}"):
+                    st.session_state[edit_key] = "word"
+            else:
+                if st.session_state[edit_key] == "word":
+                    new_word = st.text_input("編輯英文單字", value=w["word"], key=f"edit_word_input_{row_key}")
+                    if st.button("儲存", key=f"save_word_{row_key}"):
+                        # 檢查重複
+                        if new_word and new_word != w["word"] and any(x["word"] == new_word for x in words):
+                            st.error("已有相同英文單字，請重新輸入！")
+                        elif new_word:
+                            w["word"] = new_word
+                            save_words(words)
+                            st.session_state[edit_key] = False
+                            st.success("已更新！")
+                            st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
+                    if st.button("取消", key=f"cancel_word_{row_key}"):
+                        st.session_state[edit_key] = False
+        with col2:
+            if not editing:
+                if st.button(w["meaning"], key=f"btn_meaning_{row_key}"):
+                    st.session_state[edit_key] = "meaning"
+            else:
+                if st.session_state[edit_key] == "meaning":
+                    new_meaning = st.text_input("編輯中文意思", value=w["meaning"], key=f"edit_meaning_input_{row_key}")
+                    if st.button("儲存", key=f"save_meaning_{row_key}"):
+                        if new_meaning:
+                            w["meaning"] = new_meaning
+                            save_words(words)
+                            st.session_state[edit_key] = False
+                            st.success("已更新！")
+                            st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
+                    if st.button("取消", key=f"cancel_meaning_{row_key}"):
+                        st.session_state[edit_key] = False
+        with col3:
+            if not confirming_del:
+                if st.button("刪除", key=f"del_btn_{row_key}"):
+                    st.session_state[confirm_del_key] = True
+            else:
+                st.warning("確定要刪除這個單字嗎？")
+                if st.button("是", key=f"yes_del_{row_key}"):
+                    words.remove(w)
+                    save_words(words)
+                    st.session_state[confirm_del_key] = False
+                    st.success("已刪除！")
+                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
+                if st.button("否", key=f"no_del_{row_key}"):
+                    st.session_state[confirm_del_key] = False
+
 # --------------------
 # 主程式
 # --------------------
@@ -444,7 +520,7 @@ def main():
     #     clear_words()
     page = None
     if st.session_state["logged_in"]:
-        page = st.sidebar.radio("選擇頁面", ["首頁", "學習", "單字卡片", "選擇題測驗", "分析報告", "複習"])
+        page = st.sidebar.radio("選擇頁面", ["首頁", "學習", "單字卡片", "單字總覽", "選擇題測驗", "分析報告", "複習"])
     else:
         login_page()
         return
@@ -454,6 +530,8 @@ def main():
         study_page()
     elif page == "單字卡片":
         word_cards_page()
+    elif page == "單字總覽":
+        word_overview_page()
     elif page == "選擇題測驗":
         quiz_page()
     elif page == "分析報告":
